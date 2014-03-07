@@ -19,6 +19,7 @@ typedef struct _jConfig {
         BOOL daemon;
         char *chdir;
         char *log;
+        char *unix_path;
         int check_peer_interval;
         int max_clients;
         int num_sock_bufs;
@@ -28,6 +29,7 @@ typedef struct _jConfig {
 
     struct {
         char *moddir;
+        int conn-retry;
         int max_modules;
         int num_modules;
         struct module_config *modules;

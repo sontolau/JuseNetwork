@@ -7,13 +7,15 @@
 #include "jmodule.h"
 #include "list.h"
 
-typedef struct _JuseDelegate {
+typedef struct _jDelegate {
 
-} JuseDelegate;
+} jDelegate;
 
 
 typedef struct _jMetaModule {
-    char *unix_sock_path;
+    union {
+        int io_sock;
+    };
     jModule  *module;
 }jMetaModule;
 
@@ -22,13 +24,16 @@ typedef struct _jFrameContext {
 
 #ifdef OS_WINDOWS
 #else
+    int  data_sock;
+    int  rmi_sock;
+    int  io_sock;
 #endif
-    JuseDelegate   *delegate;
-    jConfig        config;
     DC_dict_t      proc_modules;
 
     //jNetbufManager netbuf_manager;
+    jConfig        config;
     jModuleManager module_manager;
+    jDelegate      *delegate;
     //jPeerManager   peer_manager;
 } jFrameContext;
 

@@ -95,6 +95,8 @@ static void set_cfg_value (jConfig *cfg, int sec, char *key, char *val)
         cfg->general.daemon = (atoi (val)?TRUE:FALSE);
     } else if (!strcmp (key, "log") && sec == JCFG_SEC_GENERAL) {
         cfg->general.log = strdup (val);
+    } else if (!strcmp (key, "conn-retry") && sec == JCFG_SEC_MODULE) {
+        cfg->module.conn_retry = atoi (val);
     } else if (!strcmp (key, "moddir") && sec == JCFG_SEC_MODULE) {
         cfg->module.moddir = strdup (val);
     } else if (!strcmp (key, "max-modules") && sec == JCFG_SEC_MODULE) {
