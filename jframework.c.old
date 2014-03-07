@@ -1,0 +1,516 @@
+#include "juse.h"
+#include "jerror.h"
+#include "jframework.h"
+
+/***********define**************/
+jFrameContext   *JuseNetwork = NULL;
+
+#ifdef OS_WINDOWS
+#else
+
+extern jFrameContext *J_get_juse ();
+
+extern void JuseSendEvent (jFrameContext*, int);
+void juse_signal_handler (int sig)
+{
+    jFrameContext *juse = J_get_juse ();
+    switch (sig) {
+        case SIGINT:
+        case SIGTERM:
+            JuseSendEvent (juse, JuseEventExitSystem);
+            break;
+        case SIGALRM:
+            break;
+        case SIGUSR1:
+            break;
+        default:
+            break;
+    }
+}
+
+void JuseSetupSignal (jFrameContext *juse)
+{
+    struct sigaction sig;
+
+    memset (&sig, '\0', sizeof (sig));
+    sig.sa_handler = juse_signal_handler;
+    signal (SIGPIPE, SIG_IGN);
+    signal (SIGHUP,  SIG_IGN);
+    
+    sigaction (SIGINT, &sig, NULL);
+    sigaction (SIGTERM, &sig, NULL);
+    sigaction (SIGALRM, &sig, NULL);
+    sigaction (SIGUSR1, &sig, NULL);
+}
+#endif
+
+int JuseCreateServer (jFrameContext *juse)
+{
+    jPeer *rmi_peer = NULL;
+    jPeer *juse_peer = NULL;
+#ifdef OS_WINDOWS
+#else
+    struct sockaddr_in skaddr;
+    int  flags = 0;
+    struct timeval tm_wait = {0, 0};
+#endif
+
+    memset (&skaddr, '\0', sizeof (skaddr));
+    juse_peer = juse->peer_manager.new_peer (&juse->peer_manager);
+    rmi_peer  = juse->peer_manager.new_peer (&juse->peer_manager);
+
+    if (juse->config.general.proto == INETProtocolTCP) {
+        juse_peer->sock_fd = socket (AF_INET, SOCK_STREAM, 0);
+    } else if (juse->config.general.proto == INETProtocolUDP) {
+        juse_peer->sock_fd = socket (AF_INET, SOCK_DGRAM, 0);
+    }
+
+    if (juse->config.rmi.proto == INETProtocolTCP) {
+        rmi_peer->sock_fd = socket (AF_INET, SOCK_STREAM, 0);
+    } else if (juse->config.rmi.proto == INETProtocolUDP) {
+        rmi_peer->sock_fd = socket (AF_INET, SOCK_DGRAM, 0);
+    }
+
+    if (juse_peer->sock_fd < 0
+        || rmi_peer->sock_fd < 0) {
+
+        jerr ("socket call failed [error: %d]\n", JERROR_CODE);
+err_quit:
+        if (juse_peer->sock_fd > 0) {
+            close (juse_peer->sock_fd);
+        }
+
+        if (rmi_peer->sock_fd > 0) {
+            close (rmi_peer->sock_fd);
+        }
+
+        return -1;
+    }
+
+    if (setsockopt (juse_peer->sock_fd, 
+                    SOL_SOCKET, 
+                    SO_REUSEADDR, 
+                    &flags, 
+                    sizeof (int))
+        || setsockopt (rmi_peer->sock_fd,
+                       SOL_SOCKET,
+                       SO_REUSEADDR,
+                       &flags,
+                       sizeof (int))) {
+        jerr ("setsockopt call failed [error:%d]\n", JERROR_CODE);
+        goto err_quit;
+    }
+
+    if (setsockopt (juse_peer->sock_fd,
+                    SOL_SOCKET,
+                    SO_RCVTIMEO,
+                    &tm_wait,
+                    sizeof (tm_wait))
+        || setsockopt (rmi_peer->sock_fd,
+                       SOL_SOCKET,
+                       SO_RCVTIMEO,
+                       &tm_wait,
+                       sizeof (tm_wait))) {
+        goto err_quit;
+    }
+
+    skaddr.sin_family = AF_INET;
+    skaddr.sin_port   = htons (juse->config.general.port);
+    skaddr.sin_addr.s_addr = juse->config.general.addr;
+
+    if (bind (juse_peer->sock_fd, (struct sockaddr*)&skaddr, sizeof (skaddr)) < 0) {
+        jerr ("bind call failed [error: %d]\n", JERROR_CODE);
+        goto err_quit;
+    }
+
+    skaddr.sin_port = htons (juse->config.rmi.port);
+    skaddr.sin_addr.s_addr = juse->config.rmi.addr;
+    if (bind (rmi_peer->sock_fd, (struct sockaddr*)&skaddr, sizeof (skaddr)) < 0) {
+        jerr ("bind call failed [error: %d]\n", JERROR_CODE);
+        goto err_quit;
+    }
+
+    if (juse->config.general.proto == INETProtocolTCP) {
+        listen (juse_peer->sock_fd, 100);
+    }
+
+    if (juse->config.rmi.proto == INETProtocolTCP) {
+        listen (rmi_peer->sock_fd, 100);
+    }
+
+    juse->local_peer[JUSE_PEER] = juse_peer;
+    DC_list_add (&juse->peers, (void*)juse_peer);
+
+    if (!juse->config.rmi.enable_management) {
+        close (rmi_peer->sock_fd);
+        juse->peer_manager.release_peer (rmi_peer);
+        juse->local_peer[MGMT_PEER] = NULL;
+    } else {
+        juse->local_peer[MGMT_PEER] = rmi_peer;
+        DC_list_add (&juse->peers, (void*)rmi_peer);
+    }
+
+
+    return 0;
+}
+
+
+void JuseSendEvent (jFrameContext *juse, int sig)
+{
+    while (pthread_mutex_lock (&juse->wait_mutex)) {
+        juse->sig_event = sig;
+    }
+
+    pthread_mutex_unlock (&juse->wait_mutex);
+    pthread_cond_broadcast (&juse->wait_cond);
+}
+
+int JuseCaptureEvent (jFrameContext *juse, int sig)
+{
+    int sig_ev;
+
+    do {
+        if (pthread_mutex_lock (&juse->wait_mutex)) {
+            usleep (1000);
+            return JuseEventDoNothing;
+        }
+
+        if (pthread_cond_wait (&juse->wait_cond, &juse->wait_mutex)) {
+            pthread_mutex_unlock (&juse->wait_mutex);
+            return JuseEventDoNothing;
+        } else {
+            sig_ev = juse->sig_event;
+            pthread_mutex_unlock (&juse->wait_mutex);
+            if (juse->sig_event == sig
+                || juse->sig_event == JuseEventExitSystem) {
+                return sig_ev;
+            }
+        }
+    } while (1);
+
+    return JuseEventDoNothing;
+}
+
+
+extern void JuseEventHander (jFrameContext*, int sig);
+void JuseInit (jFrameContext *juse)
+{
+    jConfig *cfg = &juse->config;
+
+    cfg->general.proto = INETProtocolTCP;
+    cfg->general.addr  = 0;
+    cfg->general.port  = 7777;
+    cfg->general.daemon= FALSE;
+    cfg->general.chdir = "/usr/share/juse";
+    cfg->general.log   = "/var/log/juse.log";
+    cfg->general.check_peer_interval = 5; //TCP ONLY
+    cfg->general.max_clients = 5000;
+    cfg->general.num_sock_bufs= 10000;
+    cfg->general.max_trans_size = 65535;
+    cfg->general.packet_size    = 1400;
+
+    cfg->module.moddir = "/usr/share/juse/modules/";
+    cfg->module.max_modules = 10;
+ 
+    cfg->rmi.proto = INETProtocolUDP;
+    cfg->rmi.enable_auth = FALSE;
+    cfg->rmi.auth_script = NULL;
+    cfg->rmi.addr        = 0;
+    cfg->rmi.port        = 7778;
+
+    juse->sig_event = JuseEventDoNothing;
+    juse->event_handler = JuseEventHander;
+}
+
+int JuseLoadConfig (jConfig *cfg, const char *path)
+{
+    if (ConfigLoad (cfg, path) < 0) {
+        return -1;
+    }
+
+    if (cfg->general.proto == 0 ||
+        cfg->rmi.proto == 0) {
+        jerr ("You must specify a valid protocol [tcp|udp]\n");
+        return -1;
+    }
+
+    if (cfg->general.proto == INETProtocolTCP && cfg->general.max_clients <= 0) {
+        jerr ("The number of maximum clients can't be less than or equal zero.\n");
+        return -1;
+    }
+
+    if (cfg->general.max_trans_size < cfg->general.packet_size) {
+        jerr ("The size for each packet must be less than maximum transaction size.\n");
+        return -1;
+    }
+
+    return 0;
+}
+
+#if 0
+void *JuseSendThread (void *arg)
+{
+    int ev;
+    jFrameContext *juse = (jFrameContext*)arg;
+
+    while ((ev = JuseCaptureEvent (juse, JuseEventSend)) != JuseEventExitSystem) {
+        juse->event_handler (juse, ev);
+    }
+
+    return 0;
+}
+
+void *JuseRecvThread (void *arg)
+{
+    int ev;
+    jFrameContext *juse = (jFrameContext*)arg;
+
+    while ((ev = JuseCaptureEvent (juse, JuseEventRecv)) != JuseEventExitSystem) {
+        juse->event_handler (juse, ev);
+    }
+
+    return 0;
+}
+
+void *JuseProcessThread (void *arg)
+{
+    int ev;
+    jFrameContext *juse = (jFrameContext*)arg;
+
+    while ((ev = JuseCaptureEvent (juse, JuseEventRun)) != JuseEventExitSystem) {
+        juse->event_handler (juse, ev);
+    }
+
+    return 0;
+}
+
+void *JuseCoreThread (void *arg)
+{
+    int ev;
+    jFrameContext *juse = (jFrameContext*)arg;
+
+    while ((ev = JuseCaptureEvent (juse, JuseEventRun)) != JuseEventExitSystem) {
+        juse->event_handler (juse, ev);
+    }
+
+    return 0;
+}
+
+int JuseStartChildThreads (void *arg)
+{
+    jFrameContext *juse;
+    typedef void *(*thrd_func)(void*);
+    int i;
+    thrd_func   func = NULL;
+
+    juse = (jFrameContext*)arg;
+#ifdef OS_WINDOWS
+#else
+    
+    for (i=0; i<(int)(sizeof (juse->core_threads)/sizeof (pthread_t)); i++) {
+        switch (i) {
+            case THRD_CORE:
+                func = JuseCoreThread;
+                break;
+            case THRD_PROC:
+                func = JuseProcessThread;
+                break;
+            case THRD_SEND:
+                func = JuseSendThread;
+                break;
+            case THRD_RECV:
+                func = JuseRecvThread;
+                break;
+            default:
+                func = NULL;
+                break;
+        }
+
+        if (pthread_create (&juse->core_threads[i], NULL, func, (void*)juse)) {
+            return -1;
+        }
+    }
+    
+#endif
+
+    return 0;
+}
+
+#endif
+void JuseWaitForThreadsTerminated (jFrameContext *juse)
+{
+    int i;
+
+#ifdef OS_WINDOWS
+#else
+    for (i=0; i<(int)(sizeof (juse->core_threads)/sizeof (pthread_t)); i++) {
+        pthread_join (juse->core_threads[i], NULL);
+    }
+#endif
+}
+
+void JuseSetGlobal (jFrameContext *juse)
+{
+    JuseNetwork = juse;
+}
+
+int RunModuleInProcess (jFrameContext *juse, jModule *module)
+{
+}
+
+int CreateSendRecvSocket (jFrameContext *juse)
+{
+
+}
+
+void JuseLoadModules (jFrameContext *juse)
+{
+    int i;
+    char modpath[255] = {0};
+    jModule *module;
+
+    for (i=0; i<juse->config.module.num_modules; i++) {
+        snprintf (modpath, sizeof (modpath)-1, "%s/%s/%s", 
+                  juse->config.general.chdir, 
+                  juse->config.module.moddir, 
+                  juse->config.module.modules[i].mod_name);
+        if (!juse->module_manager.load_module (&juse->module_manager,
+                                               juse->config.module.modules[i].mod_id,
+                                               modpath)) {
+            jerr ("load module[%s] failed.\n", juse->config.module.modules[i].mod_name);
+        }
+    }
+
+    for (i=0; i<juse->config.module.num_modules; i++) {
+        module = juse->module_manager.get_module (&juse->module_manager,
+                                                  juse->config.module.modules[i].mod_id);
+        if (module) {
+            pid = fork ();
+            if (pid < 0) {
+                //TODO: add code here to process exception if fork() call failed.
+            } else if (pid == 0) {
+                RunModuleInProcess (juse, module);
+            }
+        }
+    }
+}
+int JuseSetup (jFrameContext *juse)
+{
+    if (pthread_mutex_init (&juse->wait_mutex, NULL) < 0
+        || pthread_cond_init (&juse->wait_cond, NULL)) {
+         
+        return -1;
+    }
+
+    if (!ModuleManagerInit (&juse->module_manager)) {
+        jerr ("ModuleManagerInit call failed.\n");
+        return -1;
+    }
+
+    if (!NetbufManagerInit (&juse->netbuf_manager, 
+                            juse->config.general.num_sock_bufs,
+                            juse->config.general.packet_size)) {
+        jerr ("NetbufManagerInit call failed.\n");
+        return -1;
+    }
+
+    if (!PeerManagerInit (&juse->peer_manager, juse->config.general.max_clients + 2)) {
+        jerr ("PeerManagerInit call failed.\n");
+        return -1;
+    }
+
+    if (DC_list_init (&juse->peers, NULL) < 0) {
+        jerr ("DC_list_init call failed.\n");
+        return -1;
+    }
+
+    if (JuseCreateServer (juse) < 0) {
+        jerr ("JuseCreateServer call failed.\n");
+        return -1;
+    }
+
+    if (JuseStartChildThreads (juse) < 0) {
+        jerr ("JuseStartChildThreads call failed.\n");
+        return -1;
+    }
+
+    JuseLoadModules (juse);
+#ifdef OS_WINDOWS
+#else
+    JuseSetupSignal (juse);
+#endif
+
+    return 0;
+}
+
+void JuseRelease (jFrameContext *juse)
+{
+    JuseWaitForThreadsTerminated (juse);
+    DC_list_destroy (&juse->peers);
+    PeerManagerUninit (&juse->peer_manager);
+    NetbufManagerUninit (&juse->netbuf_manager);
+    ModuleManagerUninit (&juse->module_manager);
+#ifdef OS_WINDOWS
+#else
+    pthread_mutex_destroy (&juse->wait_mutex);
+    pthread_cond_destroy (&juse->wait_cond);
+#endif
+}
+
+
+int JuseRun (jFrameContext *juse)
+{
+#ifdef OS_WINDOWS
+#else
+    juse->event_handler (juse, JuseEventRun);
+#endif
+
+    return 0;
+}
+
+int JuseSetSystemEnvironment (jFrameContext *juse)
+{
+#ifdef OS_WINDOWS
+#else
+    if (juse->config.general.daemon) {
+        daemon (0, 0);
+    }
+
+    if (chdir (juse->config.general.chdir)) {
+        return -1;
+    }
+#endif
+
+    return 0;
+}
+
+int JuseMain (int argc, const char *argv[], JuseDelegate *delegate)
+{
+    jFrameContext *juse = NULL;
+    int         ret = -1;
+
+    juse = (jFrameContext*)calloc (1, sizeof (jFrameContext));
+    if (juse == NULL) {
+        goto juse_exit;
+    }
+
+    JuseInit (juse);
+
+    if (JuseLoadConfig (&juse->config, argv[1]) < 0) {
+        goto juse_exit;
+    }
+
+    if (JuseSetSystemEnvironment (juse)) {
+        goto juse_exit;
+    }
+
+    JuseSetup (juse);
+
+    ret = JuseRun (juse);
+
+    JuseRelease (juse);
+
+juse_exit:
+    if (juse) free (juse);
+    return ret;
+}
