@@ -12,6 +12,18 @@ typedef struct _jDelegate {
 
 } jDelegate;
 
+#define MCTL_REG       (1<<1)
+#define MCTL_UNREG     (1<<2)
+#define MCTL_READ      (1<<3)
+#define MCTL_SET_ENABLE  (1<<4)
+#define MCTL_SET_DISABLE (1<<5)
+#define MCTL_PING        (1<<6)
+
+#define MERR_INVALID_CMD  (1<<0)
+#define MERR_OVER_BUFSIZE (1<<1)
+#define MERR_NO_MORE_BUF  (1<<2)
+
+
 
 typedef struct _jMetaModule {
     union {
@@ -33,11 +45,13 @@ typedef struct _jFrameContext {
     int sig_event;
     pthread_mutex_t ctx_mutex;
     pthread_cond_t  ctx_cond;
-
+    DC_list_t      mod_list;
     DC_dict_t      proc_modules;
-    //jNetbufManager netbuf_manager;
+    jNetbufManager netbuf_manager;
     jConfig        config;
     jModuleManager module_manager;
+    DC_list_t      snd_buf_queue;
+    DC_list_t      rcv_buf_queue;
     jDelegate      *delegate;
     //jPeerManager   peer_manager;
 } jFrameContext;

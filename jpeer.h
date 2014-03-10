@@ -13,9 +13,10 @@ typedef struct _jPeer {
     int sock_fd;
 #endif
     jINET  inet_info;
-    unsigned int trans_buf_size;
-    unsigned char *bytes;
+    //unsigned int trans_buf_size;
+    //unsigned char *bytes;
     //DC_list_t  data_collector;
+    jNetbuf  *netbuf;
 } jPeer;
 
 typedef struct _jPeerManager {

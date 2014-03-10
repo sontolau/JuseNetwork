@@ -26,6 +26,7 @@ typedef struct _JusePayload {
     unsigned int  tid;
     unsigned int  size;
 } JusePayload;
+#define SZPAYLOD  (sizeof (JusePayload))
 
 #define JUSE_REQUEST(flags) (!(flags & 0x80000000))
 #define JUSE_COM(flags)     ((flags & 0x70000000) >> 28)

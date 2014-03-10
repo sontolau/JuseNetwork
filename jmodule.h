@@ -66,15 +66,8 @@ typedef struct _jModuleManager {
     BOOL (*load_module) (struct _jModuleManager *self, unsigned int mid, const char *name);  
     void (*unload_module) (struct _jModuleManager *self, unsigned int mid);
     jModule *(*get_module) (struct _jModuleManager *self, unsigned int mid);
-
-    //void (*add_module) (struct _jModuleManager *self, jModuleDescriptor *module);
-    //void (*remove_module) (struct _jModuleManager *self, unsigned int mid);
-    //jModuleDescriptor *(*get_module) (struct _jModuleManager *self, unsigned int mid);
     void (*clear_all_modules) (struct _jModuleManager *self);
 } jModuleManager;
-
-//extern jModuleDescriptor *ModuleLoad (unsigned int mid, const char *path);
-//extern void    ModuleUnload (jModuleDescriptor *module);
 
 
 extern BOOL ModuleManagerInit (jModuleManager *manager);

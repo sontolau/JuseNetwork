@@ -3,10 +3,12 @@
 
 #include "juse.h"
 #include "list.h"
+#include "jpayload.h"
 
 typedef struct _jNetbuf {
     unsigned int seqno;
     unsigned int length;
+    jPayload     *payload;
     unsigned char *data;
     union {
         int           intval;
@@ -14,6 +16,7 @@ typedef struct _jNetbuf {
     };
 } jNetbuf;
 
+#define NETBUF_DATA_LEN(nb) (nb->length + SZPAYLOAD);
 
 typedef struct _jNetbufManager {
     int num_buffers;
