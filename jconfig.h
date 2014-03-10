@@ -24,7 +24,7 @@ typedef struct _jConfig {
         int max_clients;
         int num_sock_bufs;
         unsigned int max_trans_size;
-        unsigned int packet_size;
+        unsigned int udp_packet_size;
     } general;
 
     struct {

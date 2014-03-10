@@ -7,6 +7,7 @@
 #include "jmodule.h"
 #include "list.h"
 
+
 typedef struct _jDelegate {
 
 } jDelegate;
@@ -16,6 +17,7 @@ typedef struct _jMetaModule {
     union {
         int io_sock;
     };
+    unsigned int module_id;
     jModule  *module;
 }jMetaModule;
 
@@ -28,8 +30,11 @@ typedef struct _jFrameContext {
     int  rmi_sock;
     int  io_sock;
 #endif
-    DC_dict_t      proc_modules;
+    int sig_event;
+    pthread_mutex_t ctx_mutex;
+    pthread_cond_t  ctx_cond;
 
+    DC_dict_t      proc_modules;
     //jNetbufManager netbuf_manager;
     jConfig        config;
     jModuleManager module_manager;

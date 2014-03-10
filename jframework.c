@@ -12,38 +12,61 @@ int RunProcInThread (void (*proc)(void*), void *data)
     return 0;
 }
 
+jMetaModule *LoadMouleInProcess (jFrameContext *jc, unsigned int midx)
+{
+    char modpath[255];
+    jMetaModule *module = NULL;
+
+    snprintf (modpath, sizeof (modpath)-1, "%s/%s/%s",
+               fc->config.general.chdir,
+               fc->config.module.moddir,
+               fc->config.module.modules[midx].mod_name);
+     
+    if (!fc->module_manager.load_module (&fc->module_manager,
+                                         fc->config.module.modules[midx].mod_id,
+                                         modpath)) {
+            return NULL;
+    } else {
+            module = (jMetaModule*)calloc (1, sizeof (jMetaModule));
+            if (module) {
+                module->io_sock = 0;
+                module->module_id = fc->config.module.modules[midx].mod_id;
+                module->module = fc->module_manager.get_module (&fc->module_manager,
+                                                                fc->config.module.modules[midx].mod_id);
+            } else {
+                fc->module_manager.unload_module (&fc->module_manager,
+                                                  fc->config.module.modules[midx].mod_id);
+            }
+
+    }
+
+}
+
+void ModuleCoreProc (jFrameContext *fc, unsigned int mid)
+{
+     if (!MoudleManagerInit (&fc->module_manager)) {
+
+     }
+
+     LoadModuleInProcess (fc, mid);
+}
+
 int LoadModules (jFrameContext *fc)
 {
     int i;
-    char modpath[255] = {0};
-    jMetaModule *mmod;
-    jModule *module;
-
-    if (!ModuleManagerInit (&fc->module_manager)) {
-        return -1;
-    }
-
+    unsigned int mid;
+    pid_t pid;
 
     for (i=0; i<fc->config.module.num_modules; i++) {
-        snprintf (modpath, sizeof (modpath)-1, "%s/%s/%s",
-                  fc->config.general.chdir,
-                  fc->config.module.moddir,
-                  fc->config.module.modules[i].mod_name);
-        if (!fc->module_manager.load_module (&fc->module_manager,
-                                             fc->config.module.modules[i].mod_id,
-                                               modpath)) {
-            jerr ("load module[%s] failed.\n", fc->config.module.modules[i].mod_name);
+        mid = fc->config.module.modules[i].mod_id;
+
+        pid = fork ();
+        if (pid < 0) {
+
+        } else if (pid == 0) {
+            ModuleCoreProc (fc, mid);
         } else {
-            module = fc->module_manager.get_module (&fc->module_manager,
-                                                  fc->config.module.modules[i].mod_id);
-            if (module && (mmod = (jMetaModule*)calloc (1, sizeof (jMetaModule)))) {
-                mmod->module = module;
-                sprintf (modpath, "%lu", fc->config.module.modules[i].mod_id);
-                DC_dict_add_object_with_key (&fc->proc_modules, (char*)modpath, mmod);                
-            } else {
-                fc->module_manager.unload_module (&fc->module_manager,
-                                                  fc->config.module.modules[i].mod_id);
-            }
+
         }
     }
     return 0;
@@ -57,9 +80,31 @@ void SetDefaultConfig (jConfig *cfg)
     cfg->general.chdir = "/";
     cfg->general.log   = "/var/log/juse.log";
     cfg->general.unix_path = "/tmp/juse-sock.unix";
+    cfg->general.daemon = FALSE;
+    cfg->general.check_peer_interval = 1;
+    cfg->general.max_clients = 1000;
+    cfg->general.max_trans_size = 1400;
+    cfg->general.udp_packet_size = 1400;
 
-    
+    cfg->module.moddir = "modules";
+    cfg->module.conn-retry = 3;
+    cfg->module.max_modules = 10;
+    cfg->module.num_modules = 0;
+    cfg->module.modules = NULL;
+
+    cfg->rmi.enable_management = FALSE;
+    cfg->rmi.proto = INETProtocolTCP;
+    cfg->rmi.enable_auth = FALSE;
+    cfg->rmi.auth_script = NULL;
+    cfg->rmi.addr        = INADDR_ANY;
+    cfg->rmi.port        = 4041;
 }
+
+int CheckConfig (jConfig *cfg)
+{
+    return 0;
+}
+
 
 int LoadConfig (jConfig *cfg, const char *path) 
 {
@@ -174,6 +219,10 @@ int CreateInetServer (int proto, unsigned int addr, unsigned short port)
     return sock;
 }
 
+extern void DataServerCore (jFrameContext *fc);
+extern void RMIServerCore (jFrameContext *fc);
+extern void IOServerCore (jFrameContext *fc);
+
 int CreateDataServer (jFrameContext *fc)
 {
     fc->data_sock = CreateInetServer (fc->config.general.proto, 
@@ -183,6 +232,7 @@ int CreateDataServer (jFrameContext *fc)
         return -1;
     }
 
+    RunProcInThread (DataServerCore, fc);
     return 0;
 }
 
@@ -195,6 +245,7 @@ int CreateRMIServer (jFrameContext *fc)
         return -1;
     }
 
+    RunProcInThread (RMIServerCor, fc);
     return 0;
 }
 
@@ -217,12 +268,13 @@ int CreateIOServer (jFrameContext *fc)
         return -1;
     }
 
+    RunProcInThread (IOServerCore, fc);
     return 0;
 }
 
 #define MAX_FD(fd1, fd2) (fd1>fd2?fd1:fd2)
 
-void ServerCore (jFrameContext *fc)
+int JuseCore (jFrameContext *fc)
 {
     fd_t  serv_fds;
     int ret;
@@ -251,24 +303,40 @@ void ServerCore (jFrameContext *fc)
 
 int RunServers (jFrameContext *fc)
 {
-    if (CreateDataServer (fc) < 0) {
+    if (RunDataServer (fc) < 0) {
 
     }
 
-    if (CreateRMIServer (fc) < 0) {
+    if (fc->config.rmi.enable_management 
+        && RunRMIServer (fc) < 0) {
+        return -1;
+    }
+
+    if (RunIOServer (fc) < 0) {
 
     }
 
-    if (CreateIOServer (fc) < 0) {
+    return JuseCore (fc);
+}
 
+void SetJuseSystem (jFrameContext *fc)
+{
+    if (fc->config.general.daemon) {
+        daemon (0, 0);
     }
 
-    return RunProcInThread (ServerCore, (void*)fc);
+     if (fc->config.general.chdir) {
+        chdir (fc->config.general.chdir);
+    }
+
 }
 
 void JuseRun (jFrameContext *fc)
 {
+    SetJuseSystem (fc);
+
     RunModules (fc);
+
     RunServers (fc);
 }
 
@@ -279,13 +347,18 @@ int JuseInit (jFrameContext *fc, const char *cfg)
         return -1;
     }
 
+    if (phread_mutex_init (&fc->ctx_mutex, NULL) < 0) {
+        return -1;
+    }
+
+    if (pthread_cond_init (&fc->ctx_cond, NULL) < 0) {
+        return -1;
+    }
+
     if (LoadConfig (&fc->config, cfg) < 0) {
         return -1;
     }
 
-    if (LoadModules (fc) < 0) {
-        return -1;
-    }
 
     return 0;
 }
