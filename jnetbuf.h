@@ -5,10 +5,26 @@
 #include "list.h"
 #include "jpayload.h"
 
+
+#define PROTO_UDP   1
+#define PROTO_TCP   2
+
+typedef struct _jINET {
+    int sock_fd;
+    int proto;
+    
+    union {
+        unsigned int addr;
+        char *unix_path;
+    };
+    unsigned short port;
+} jINET;
+
+
+
 typedef struct _jNetbuf {
     unsigned int seqno;
     unsigned int length;
-    jPayload     *payload;
     unsigned char *data;
     union {
         int           intval;

@@ -13,24 +13,36 @@
 
 
 enum {
-   JuseComSet = 1,
-   JuseComTrans,
+   jComGetOption = 1,
+   jComSetOption = 2,
+   jComTrans
 };
 
-typedef struct _JusePayload {
-    unsigned char magic[4];
+enum {
+   jOptionTransSize = 1,
+   jOptionUDPPacketSize = 2,
+};
+
+typedef struct _jPayload {
+    unsigned int magic;
     unsigned int  version;
     unsigned int  flags;
     jErrorStatus  status;
     unsigned int  mid;
     unsigned int  tid;
     unsigned int  size;
-} JusePayload;
+} jPayload;
 #define SZPAYLOD  (sizeof (JusePayload))
 
-#define JUSE_REQUEST(flags) (!(flags & 0x80000000))
-#define JUSE_COM(flags)     ((flags & 0x70000000) >> 28)
-#define JUSE_COM_VALUE(flags) (flags & 0x0FFFFFFF)
+#define J_COMMAND(flags)  ((flags & 0xF0000000) >> 28)
+#define J_OPTION(flags)   ((flags & 0x0F000000) >> 24)
+#define J_ARGUMENT(flags) (flags & 0x00FFFFFF)
 
+
+
+
+#define J_SET_PAYLOAD(pay, com, opt, value) ((pay).flags = ((com & 0xF) << 28) |\
+                                                           ((opt & 0xF) << 24) |\
+                                                           value)
 
 #endif

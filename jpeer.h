@@ -3,27 +3,25 @@
 
 #include "juse.h"
 #include "jnetbuf.h"
-#include "jinet.h"
-#include "jnetbuf.h"
 
 
 typedef struct _jPeer {
-#ifdef OS_WINDOWS
-#else
-    int sock_fd;
-#endif
+    unsigned pid;
     jINET  inet_info;
-    //unsigned int trans_buf_size;
-    //unsigned char *bytes;
-    //DC_list_t  data_collector;
+    //unsigned int mid;
+    unsigned int conn_time;
+    BOOL         conn_flag;
     jNetbuf  *netbuf;
 } jPeer;
 
 typedef struct _jPeerManager {
     int num_peers;
+    unsigned int base_id;
     jPeer *peer_base;
     DC_list_t peers;
+    DC_dict_t engaged_peers;
 
+    jPeer *(*get_peer) (struct _jPeerManager*, unsigned int pid);
     jPeer *(*new_peer) (struct _jPeerManager*);
     void (*release_peer) (struct _jPeerManager*, jPeer*);
 } jPeerManager;

@@ -65,9 +65,9 @@ static void set_cfg_value (jConfig *cfg, int sec, char *key, char *val)
         }
     } else if (!strcmp (key, "proto")) {
         if (!strcmp (val, "tcp")) {
-            temp = INETProtocolTCP;
+            temp = PROTO_TCP;
         } else if (!strcmp (val, "udp")) {
-            temp = INETProtocolUDP;
+            temp = PROTO_UDP;
         } else {
             temp = 0;
         }
@@ -79,7 +79,7 @@ static void set_cfg_value (jConfig *cfg, int sec, char *key, char *val)
         }
     } else if (!strcmp (key, "check-peer-interval") && sec == JCFG_SEC_GENERAL) {
         cfg->general.check_peer_interval = atoi (val);
-    } else if (!strcmp (key, "max-clients") && sec == JCFG_SEC_GENERAL) {
+    } else if (!strcmp (key, "max-peers") && sec == JCFG_SEC_GENERAL) {
         cfg->general.max_clients = atoi (val);
     } else if (!strcmp (key, "max-trans-size") && sec == JCFG_SEC_GENERAL) {
         cfg->general.max_trans_size = (unsigned int)atoi (val);

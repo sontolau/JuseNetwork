@@ -1,5 +1,187 @@
 #include "jframework.h"
 
+///////////////////////////////////
+//  Module operations
+///////////////////////////////////
+
+
+jMetaModule *FindModuleWithID (jFrameContext *fc, unsigned int mid)
+{
+    int i;
+    char strid[10];
+    static jMetaModule *module = NULL;
+   
+    if (module && module->module_id == mid) {
+        return module;
+    }
+
+    if (pthread_mutex_lock (&fc->ctx_mutex) == 0) {
+#if 0
+        for (i=0; i<fc->modules.count; i++) {
+            module = DC_list_get_object_at_index (&fc->modules, i)
+            if (module && module->module_id == mid) {
+                break;
+            }
+        }
+#endif
+        sprintf (strid, "%lu", mid);
+        module = DC_dict_get_object_with_key (&fc->engaged_modules,
+                                              (char*)strid);
+        pthread_mutex_unlock (&fc->ctx_mutex);
+    }
+
+    return module;
+}
+
+void *FindObjectInLists (jFrameContext *fc, int type_idx, int index)
+{
+    int i;
+    void *obj = NULL;
+
+    if (pthread_mutex_lock (&fc->ctx_mutex) == 0) {
+        obj = DC_list_object_at_index (&fc->core_lists[type_idx],index);
+        pthread_mutex_unlock (&fc->ctx_mutex);
+    }
+    return obj;
+}
+
+
+void RemoveProcModuleWithID (jFrameContext *fc, unsigned int mid)
+{
+    char strid[10] = {0};
+    static jMetaModule *module == NULL;
+
+    if (pthread_mutex_lock (&fc->ctx_mutex) == 0) {
+        if (module && module->module_id == mid) {
+            goto rm_module;
+        }
+        for (i=0; i<fc->modules.count; i++) {
+            module = DC_list_get_object_at_index (&fc->modules, i);
+            if (module && module->module_id == mid) {
+rm_module:
+                DC_list_remove_object (&fc->modules, (void*)module);
+                free (module);
+                break;
+            }
+        }
+
+        pthread_mutex_unlock (&fc->ctx_mutex);
+    }
+
+}
+
+jMetaModule *AllocNewModule (jFrameContext *fc, unsigned int mid)
+{
+    char strid[10];
+    jMetaModule *module = NULL;
+   
+    module = (jMetaModule*)calloc (1, sizeof (jMetaModule));
+    if (module && pthread_mutex_lock (&fc->ctx_mutex) == 0) {
+        sprintf (strid, "%lu", mid);
+        module->module_id = mid;
+        DC_dict_add_object_with_key (&fc->engaged_modules, (char*)strid, (void*)module);
+        pthread_mutex_unlock (&fc->ctx_mutex);
+    }
+
+    return module;
+}
+
+int DisableModule (jMetaModule *mod)
+{
+    int cmd[2] = {MCTL_DISABLE, 0};
+
+    if (send (mod->sock_fd, &cmd[0], sizeof (int), 0) >= sizeof (int)
+        && recv (mod->sock_fd, cmd, sizeof (cmd), 0) >= sizeof (cmd)
+        && cmd[0] == MCTL_DISABLE
+        && cmd[1] == 0) {
+        return 0;
+    }
+
+    return -1;
+}
+
+
+int EnableModule (jMetaModule *mod)
+{
+    int cmd[2] = {MCTL_ENABLE, 0};
+
+    if (send (mod->sock_fd, &cmd[0], sizeof (int), 0) >= sizeof (int)
+        && recv (mod->sock_fd, cmd, sizeof (cmd), 0) >= sizeof (cmd)
+        && cmd[0] == MCTL_ENABLE
+        && cmd[1] == 0) {
+        return 0;
+    }
+
+    return -1;
+}
+
+int QueryModule (jMetaModule *mod, unsigned int *flags)
+{
+    int cmd[3] = {MCTL_QUERY, 0, 0};
+
+    if (send (mod->sock_fd, &cmd[0], sizeof (int), 0) >= sizeof (int)
+        && recv (mod->sock_fd, cmd, sizeof (cmd), 0) >= sizeof (cmd)
+        && cmd[0] == MCTL_QUERY
+        && cmd[1] == 0) {
+        *flags = cmd[2];
+        return 0;
+    }
+
+    return -1;
+
+}
+
+int WriteModule (jMetaModule *mod, jPeer *peer)
+{
+    unsigned int cmd_arg[3] = {MCTL_WRITE, peer->pid, peer->net_buf.length};
+
+    if (send (mod->sock_fd, cmd_arg, sizeof (cmd_arg), 0) >= sizeof (cmd_arg)
+        && send (mod->sock_fd, peer->net_buf.data, peer->net_buf.length, 0) 
+                                                    >= peer->net_buf.length
+        && recv (mod->sock_fd, cmd_arg, 2*sizeof (int), 0) >= 2*sizeof (int)) {
+        return 0;
+    }
+
+    return -1;
+}
+
+int PingModule (jMetaModule *mod)
+{
+    unsigned int cmd[] = {MCTL_PING, 0};
+
+    if (send (mod->sock_fd, &cmd[0], sizeof (int), 0) >= sizeof (int)
+        && recv (mod->sock_fd, &cmd[0], sizeof (cmd), 0) >= sizeof (cmd)
+        && cmd[0] == MCTL_PING
+        && cmd[1] == 0) {
+        return 0;
+    }
+
+    return -1;
+}
+
+int RegisterModule (jMetaModule *mod)
+{
+    unsigned int cmd_arg[3] = {MCTL_REGISTER, 0, 0};
+    if (send (mod->sock_fd, &cmd_arg[0], sizeof (int), 0) >= sizeof (int)
+        && recv (mod->sock_fd, &cmd_arg[0], sizeof (cmd_arg), 0) >= sizeof (cmd_arg)
+        && cmd_arg[0] == MCTL_REGISTER
+        && cmd_arg[1] == 0) {
+        mod->module_id = cmd_arg[2];
+        return 0;
+    }
+    return -1;
+}
+
+int RunProcInCritical (jFrameContext *fc, void (*code)(void*), void *data)
+{
+    if (pthread_mutex_lock (&fc->ctx_mutx) == 0) {
+        code (data);
+        pthread_mutex_unlock (&fc->ctx_mutex);
+        return 0;
+    }
+
+    return -1;
+}
 
 int RunProcInThread (void (*proc)(void*), void *data)
 {
@@ -12,69 +194,9 @@ int RunProcInThread (void (*proc)(void*), void *data)
     return 0;
 }
 
-jMetaModule *LoadMouleInProcess (jFrameContext *jc, unsigned int midx)
-{
-    char modpath[255];
-    jMetaModule *module = NULL;
-
-    snprintf (modpath, sizeof (modpath)-1, "%s/%s/%s",
-               fc->config.general.chdir,
-               fc->config.module.moddir,
-               fc->config.module.modules[midx].mod_name);
-     
-    if (!fc->module_manager.load_module (&fc->module_manager,
-                                         fc->config.module.modules[midx].mod_id,
-                                         modpath)) {
-            return NULL;
-    } else {
-            module = (jMetaModule*)calloc (1, sizeof (jMetaModule));
-            if (module) {
-                module->io_sock = 0;
-                module->module_id = fc->config.module.modules[midx].mod_id;
-                module->module = fc->module_manager.get_module (&fc->module_manager,
-                                                                fc->config.module.modules[midx].mod_id);
-            } else {
-                fc->module_manager.unload_module (&fc->module_manager,
-                                                  fc->config.module.modules[midx].mod_id);
-            }
-
-    }
-
-}
-
-void ModuleCoreProc (jFrameContext *fc, unsigned int mid)
-{
-     if (!MoudleManagerInit (&fc->module_manager)) {
-
-     }
-
-     LoadModuleInProcess (fc, mid);
-}
-
-int LoadModules (jFrameContext *fc)
-{
-    int i;
-    unsigned int mid;
-    pid_t pid;
-
-    for (i=0; i<fc->config.module.num_modules; i++) {
-        mid = fc->config.module.modules[i].mod_id;
-
-        pid = fork ();
-        if (pid < 0) {
-
-        } else if (pid == 0) {
-            ModuleCoreProc (fc, mid);
-        } else {
-
-        }
-    }
-    return 0;
-}
-
 void SetDefaultConfig (jConfig *cfg)
 {
-    cfg->general.proto = INETProtocolUDP;
+    cfg->general.proto = PROTO_UDP;
     cfg->general.addr  = INADDR_ANY;
     cfg->general.port  = 3040;
     cfg->general.chdir = "/";
@@ -93,7 +215,7 @@ void SetDefaultConfig (jConfig *cfg)
     cfg->module.modules = NULL;
 
     cfg->rmi.enable_management = FALSE;
-    cfg->rmi.proto = INETProtocolTCP;
+    cfg->rmi.proto = PROTO_TCP;
     cfg->rmi.enable_auth = FALSE;
     cfg->rmi.auth_script = NULL;
     cfg->rmi.addr        = INADDR_ANY;
@@ -168,13 +290,11 @@ void RunModules (jFrameContext *fc)
     pid_t pid;
 
     for (i=0; i<fc->config.module.num_modules; i++) {
-        if (mmod) {
-            pid = fork ();
-            if (pid < 0) {
-                jerr ("fork call failed.\n");
-            } else if (pid == 0) {
-                exit (RunModuleInProcess (fc, i));
-            }
+        pid = fork ();
+        if (pid < 0) {
+            jerr ("fork call failed.\n");
+        } else if (pid == 0) {
+            exit (RunModuleInProcess (fc, i));
         }
     }
     
@@ -187,9 +307,9 @@ int CreateInetServer (int proto, unsigned int addr, unsigned short port)
     int flag = 1;
     unsigned int szsockbuf = 0xFFFF;
 
-    if (proto == INETProtocolTCP) {
+    if (proto == PROTO_TCP) {
         sock = socket (AF_INET, SOCK_STREAM, 0);
-    } else if (proto == INETProtocolUDP) {
+    } else if (proto == PROTO_UDP) {
         sock = socket (AF_INET, SOCK_DGRAM, 0);
     }
 
@@ -207,7 +327,7 @@ int CreateInetServer (int proto, unsigned int addr, unsigned short port)
         return -1;
     }
 
-    if (proto == INETProtocolTCP) {
+    if (proto == PROTO_TCP) {
         listen (sock, 100);
     }
     return sock;
@@ -266,112 +386,72 @@ int CreateIOServer (jFrameContext *fc)
     return 0;
 }
 
-#define MAX_FD(fd1, fd2) (fd1>fd2?fd1:fd2)
-
-int JuseCore (jFrameContext *fc)
-{
-    fd_t  serv_fds;
-    int ret;
-    struct timeval tm_wait = {1, 0};
-    int max_fds;
-
-    FD_ZERO (&serv_fds);
-    FD_SET (fc->data_sock, &serv_fds);
-    FD_SET (fc->rmi_sock, &serv_fds);
-    FD_SET (fc->io_sock, &serv_fds);
-
-    max_fds = MAX_FD (fc->io_sock, MAX_FD (fc->data_sock, fc->rmi_sock));
-    do {
-        ret = select (max_fds+1, &serv_fds, NULL, NULL, &tm_wait);
-        if (ret < 0) {
-
-        } else if (ret == 0) {
-
-
-        } else {
-
-
-        }
-    } while (1);
-}
-
-jPeer *GetPeerFromQueue (jFrameContext *fc, DC_list_t *queue)
+jPeer *GetPeerFromQueue (jFrameContext *fc)
 {
     jPeer *peer = NULL;
 
     if (pthread_mutex_lock (&fc->ctx_mutex) == 0) {
-        peer = DC_list_get_object_at_index (queue, 0);
-        DC_list_remove_object_at_index (queue, 0);
+        peer = DC_list_get_object_at_index (&fc->peer_queue, 0);
+        DC_list_remove_object_at_index (&fc->peer_queue, 0);
         pthread_mutex_unlock (&fc->ctx_mutex);
     }
 
     return peer;
 }
 
-void RecvProc (void *data)
+int WaitForEvent (jFrameContext *fc, int ev)
 {
+    int ret;
+    int sig;
 
+    do {
+        pthread_mutex_lock (&fc->ctx_mutex);
+        ret = pthread_cond_wait (&fc->ctx_cond, &fc->ctx_mutex);
+        if (ret == 0) {
+            sig = fc->event;
+        }
+        pthread_mutex_unlock (&fc->ctx_mutex);
+    } while (sig != ev && sig != jEventQuit);
+
+    return sig;
 }
 
-void SendProc (void *data)
+int SendEvent (jFrameContext *fc, int ev)
 {
-    struct timespec tm_wait;
+    if (pthread_mutex_trylock (&fc->ctx_mutex) == 0) {
+        fc->event = ev;
+        pthread_mutex_unlock (&fc->ctx_mutex);
+        return 0;
+    }
+    return -1;
+}
+
+void ReadWriteProc (void *data)
+{
+    jFrameContext *fc = (jFrameContext*)data;
     int ret;
     jPeer *peer;
-    unsigned int szdata;
-    jFrameContext *fc = (jFrameContext*)data;
-    int  slen;
-    struct sockaddr_in addr;
-    unsigned char *dataptr;
 
-    while (1) {
-        pthread_mutex_lock (&fc->ctx_mutex);
-        ret = pthread_cond_timedwait (&fc->ctx_cond, &fc->ctx_mutex, &tm_wait);
-        pthread_mutex_unlock (&fc->ctx_mutex);
-        if (ret < 0 && errno == ETIMEDOUT) {
-            continue;
-        } else if (ret == 0) {
-            while ((peer = GetPeerFromQueue (fc, &fc->snd_buf_queue))) {
-                if (peer->inet_info.proto == INETProtocolTCP) {
-                    if (send (peer->sock_fd, 
-                        peer->netbuf->payload, 
-                        NETBUF_DATA_LEN(peer->netbuf), 0) <= 0) {
-                        jerr ("");
-                    }
-                } else if (peer->inet_info.proto == INETProtocolUDP) {
-                    szdata = NETBUF_DATA_LEN(peer->netbuf);
-                    addr.sin_family = AF_INET;
-                    addr.sin_port   = htons (peer->inet_info.port);
-                    addr.sin_addr.s_addr = peer->inet_info.addr;
-                    dataptr = (unsigned char*)peer->netbuf->payload;
+    do {
+        ret = WaitForEvent (fc, jEventReadWrite);
+        if (ret < 0) {
 
-                    while (szdata > 0) {
-                        slen = sendto (peer->sock_fd, 
-                                       dataptr, 
-                                       fc->config.general.udp_packet_size,
-                                       0,
-                                       (struct sockaddr*)&addr,
-                                       sizeof (addr));
-                        if (slen > 0) {
-                            szdata -= slen;
-                        } else {
-                            break;
-                        }
-                                       
-                    }
+        } else if (ret == jEventReadWrite) {
+            while ((peer = GetPeerFromQueue (fc))) {
+                if (peer->netbuf->intval == EV_READ) {
+
+                } else if (peer->netbuf->intval == EV_WRITE) {
+
                 }
-
-                fc->netbuf_manager.free_buffer (&fc->netbuf_manager, peer->netbuf);
-                fc->peer_manager.release_peer (&fc->peer_manager, peer);
             }
+        } else if (ret == jEventQuit) {
         }
     }
 }
 
 int RunServers (jFrameContext *fc)
 {
-    RunProcInThread (SendProc, fc);
-    RunProcInThread (RecvProc, fc);
+    RunProcInThread (ReadWriteProc, fc);
 
     if (RunDataServer (fc) < 0) {
 
@@ -412,38 +492,36 @@ void JuseRun (jFrameContext *fc)
 
 void JuseUninit (jFrameContext *fc)
 {
+    int i;
+
     pthread_cond_destroy (&fc->ctx_cond);
     pthread_mutex_destroy (&fc->ctx_mutex);
     ModuleManagerUninit (&fc->module_manager);
     NetbufManagerUninit (&fc->netbuf_manager);
-    DC_list_destroy (&fc->rcv_buf_queue);
-    DC_list_destroy (&fc->snd_buf_queue);
-    DC_list_destroy (&fc->mod_list);
-    DC_dict_destroy (&fc->proc_modules);
+    PeerManagerUninit (&fc->peer_manager);
+
+    for (i=0; i<sizeof (fc->core_lists)/sizeof (DC_list_t); i++) {
+        DC_list_destroy (&fc->core_lists[i]);
+    }
+
+    DC_dict_destroy (&fc->engaged_modules);
+    //DC_list_destroy (&fc->peer_list);
+    //DC_list_destroy (&fc->msock_list);
 }
 
 int JuseInit (jFrameContext *fc, const char *cfg)
 {
+    int i;
+
     if (LoadConfig (&fc->config, cfg) < 0) {
         return -1;
     }
 
-    if (DC_dict_init (&fc->proc_modules, NULL) < 0) {
-        jerr ("DC_dict_init call failed.\n");
-        return -1;
+    for (i=0; i<sizeof (fc->core_lists)/sizeof (DC_list_t); i++) {
+        DC_list_init (&fc->core_lists[i], NULL);
     }
 
-    if (DC_list_init (&fc->mod_list, NULL) < 0) {
-
-    }
-
-    if (DC_list_init (&fc->snd_buf_queue, NULL) < 0) {
-
-    }
-
-    if (DC_list_init (&fc->rcv_buf_queue, NULL) < 0) {
-
-    }
+    DC_dict_init (&fc->engaged_modules, NULL);
     if (!NetbufManagerInit (&fc->netbuf_manager, fc->config.general.max_trans_size)) {
 
     }
@@ -451,6 +529,12 @@ int JuseInit (jFrameContext *fc, const char *cfg)
     if (!ModuleManagerInit (&fc->module_manager)) {
 
     }
+
+    if (!PeerManagerInit (&fc->peer_manager, 1000)) {
+
+    }
+
+    fc->err_payloads = ErrorPayloads ();
 
     if (phread_mutex_init (&fc->ctx_mutex, NULL) < 0) {
         return -1;
