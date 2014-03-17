@@ -7,10 +7,14 @@
 #include <unistd.h>
 #include <sys/socket.h>
 #include <sys/select.h>
+#include <sys/time.h>
 #include <netinet/in.h>
+#include <arpa/inet.h>
 #include <signal.h>
 #include <errno.h>
 #include <pthread.h>
+#include <sys/un.h>
+#include <fcntl.h>
 #endif
 
 #include <stdio.h>

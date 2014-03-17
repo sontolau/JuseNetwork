@@ -3,12 +3,12 @@
 
 #include "juse.h"
 #include "jnetbuf.h"
-
+#include "dict.h"
 
 typedef struct _jPeer {
     unsigned pid;
+
     jINET  inet_info;
-    //unsigned int mid;
     unsigned int conn_time;
     BOOL         conn_flag;
     jNetbuf  *netbuf;

@@ -9,10 +9,10 @@
 #define JERROR_CODE   errno
 #endif
 
-typedef struct _jErrorStatus {
+typedef struct _jError {
     unsigned short eclass;
     unsigned short ecode;
-} jErrorStatus;
+} jError;
 
 #define EOK  0x0000
 
@@ -22,11 +22,5 @@ typedef struct _jErrorStatus {
 #define ESYS_OVER_BUFSIZE 4
 #define ESYS_TRANS_TIMEO 5
 #define ESYS_INVALID_REQUEST 6
-
-#define EMODULE  0x0002
-#define EMOD_INVALID  1
-#define EMOD_DISABLED 2
-
-extern jPayload **ErrorPayloads ();
 
 #endif

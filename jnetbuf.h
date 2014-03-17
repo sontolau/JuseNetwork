@@ -3,7 +3,6 @@
 
 #include "juse.h"
 #include "list.h"
-#include "jpayload.h"
 
 
 #define PROTO_UDP   1
@@ -32,10 +31,10 @@ typedef struct _jNetbuf {
     };
 } jNetbuf;
 
-#define NETBUF_DATA_LEN(nb) (nb->length + SZPAYLOAD);
 
 typedef struct _jNetbufManager {
     int num_buffers;
+
     unsigned int unit_size;
     unsigned char *data_buffer;
     jNetbuf *net_buffer;

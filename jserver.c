@@ -1,3 +1,9 @@
+#include "jserver.h"
+#include "jheader.h"
+
+#define SIG_CHECK_PEER "signal_check_peer"
+
+//创建服务器。
 int      ServerCreate (jServer *serv,
                        int proto, 
                        const char *addr, 
@@ -8,10 +14,9 @@ int      ServerCreate (jServer *serv,
     struct sockaddr_in inaddr;
     struct sockaddr_un unaddr;
 
-    //DC_list_init (&serv->sock_peers, NULL);
-    //DC_list_init (&serv->peers, NULL);
-    //NetbufManagerInit (&serv->mem_netbuf, maxbufs);
-    //PeerManagerInit (&serv->mem_peers, maxpeers);
+    if (pthread_rwlock_init (&serv->rwlock, NULL) < 0) {
+        return -1;
+    }
 
     serv->inet_info.proto = proto;
     serv->inet_info.port  = port;
@@ -44,50 +49,43 @@ int      ServerCreate (jServer *serv,
     }
 
     if (serv->inet_info.sock_fd < 0) {
-        ServerClose (serv);
-        return NULL;
+        return -1;
     }
 
-    setsockopt (serv->inet_info.sock_fd, SOL_SOCKET, SO_REUSEADDR, flags, sizeof (int));
-    fcntl (serv->inet_info.sock_fd, FD_GETFL, &flags);
+    setsockopt (serv->inet_info.sock_fd, SOL_SOCKET, SO_REUSEADDR, &flags, sizeof (int));
+    //设置非阻塞模式。
+    fcntl (serv->inet_info.sock_fd, F_GETFL, &flags);
     flags |= O_NONBLOCK;
-    fcntl (serv->inet_info.sock_fd, FD_SETFL, flags);
+    fcntl (serv->inet_info.sock_fd, F_SETFL, flags);
 
     if (bind (serv->inet_info.sock_fd, skaddr, sizeof (struct sockaddr)) < 0) {
-        ServerClose (serv);
-        return NULL;
+        close (serv->inet_info.sock_fd);
+        return -1;
     }
 
     if (proto == PROTO_TCP) {
         listen (serv->inet_info.sock_fd, 100);
     }
-    return serv;
+
+    return 0;
 }
 
 
-int ServerSetOptions (jServer *serv, 
-                      unsigned int max_trans, 
-                      int ping_interval)
-{
-    serv->ping_interval = ping_interval;
-    serv->max_trans     = max_trans;
-     
-}
-                      
-int DoRequest (jPeer *peer, jServer *serv, unsigned int max_trans)
+int DoRequest (jPeer *peer, jServer *serv)
 {
     jTransHeader *hdr;
     struct sockaddr skaddr;
     socklen_t sklen = sizeof (skaddr);
     int ret;
-    jPeer *peer = NULL;
+    int status = 0;
+    jError  error = {EOK, EOK};
     char strid[10] = {0};
     static jNetbuf  *netbuf;
     unsigned int szbuf;
-
+    jPeer  *newpeer = NULL;
     //申请一块用以接受数据的缓冲区。
-    szbuf = max_trans + SZTRANSHDR;
-    netbuf = serv->mem_netbuf.alloc_buffer (&serv->mem_netbuf, SZTRANSHDR);
+    szbuf = serv->max_trans + SZTRANSHDR;
+    netbuf = serv->nb_manager.alloc_buffer (&serv->nb_manager, szbuf);
     if (netbuf == NULL) {
         return 0;
     }
@@ -96,7 +94,7 @@ int DoRequest (jPeer *peer, jServer *serv, unsigned int max_trans)
     hdr = (jTransHeader*)netbuf->data;
     if (peer->inet_info.proto == PROTO_TCP) {
         ret = recv (peer->inet_info.sock_fd, netbuf->data, szbuf, 0);
-        getpeername (sock, &skaddr, &sklen);
+        getpeername (peer->inet_info.sock_fd, &skaddr, &sklen);
     } else if (peer->inet_info.proto == PROTO_UDP) {
         ret = recvfrom (peer->inet_info.sock_fd, netbuf->data, szbuf, 0, &skaddr, &sklen);
     }
@@ -110,130 +108,301 @@ int DoRequest (jPeer *peer, jServer *serv, unsigned int max_trans)
     }
 
     netbuf->length = (unsigned int)ret;
+    sprintf (strid, "%u", hdr->PID);
     switch (hdr->command) {
+        //处理JCOM_CONN命令，该命令用于连接到本服务区。
         case JCOM_CONN:
-            if (proto == PROTO_UDP) {
-                peer = serv->mem_peers.new_peer (&serv->mem_peers);
-                if (peer) {
-                    peer->inet_info.addr = serv->inet_info.addr;
-                    peer->inet_info.port = serv->inet_info.port;
-                    peer->inet_info.sock_fd = serv->inet_info.sock_fd;
+            if (JUSE_REPLY(*hdr)) {
+                
+            }
+
+            if (peer->inet_info.proto == PROTO_UDP) {
+                //分配一个新的节点为新连接的客户。
+                peer = serv->peer_manager.new_peer (&serv->peer_manager);
+                if (newpeer == NULL) {
+                    return 0;
                 }
-            } else if (proto === PROTO_TCP) {
+                peer->inet_info.addr = serv->inet_info.addr;
+                peer->inet_info.port = serv->inet_info.port;
+                peer->inet_info.sock_fd = serv->inet_info.sock_fd;
+            } else if (peer->inet_info.proto == PROTO_TCP) {
                 peer->inet_info.addr = ((struct sockaddr_in*)&skaddr)->sin_addr.s_addr;
                 peer->inet_info.port = ((struct sockaddr_in*)&skaddr)->sin_port;
             }
             peer->pid = PID();
-            peer->conn_flag = TRUE;
+            if (serv->connect) {
+                status = serv->connect (serv, peer, serv->private_data, &error);
+            }
 
-            sprintf (strid, "%lu", peer->pid());
-            DC_dict_add_object_with_key (&serv->conn_peers, (char*)strid, (void*)peer);
+            if (status == 0) {
+                peer->conn_flag = TRUE;
+                DC_dict_add_object_with_key (&serv->conn_peers, (char*)strid, (void*)peer);
+                if (peer->inet_info.proto == PROTO_UDP) {
+                    DC_list_add_object (&serv->sock_peers, (void*)peer);
+                }
+            } else if (peer->inet_info.proto == PROTO_UDP){
+                serv->peer_manager.release_peer (&serv->peer_manager, peer);
+            }
             break;
         case JCOM_DISCONN:
-            sprintf (strid, "%lu", hdr->PID);
+            if (JUSE_REPLY (*hdr)) {
+
+            }
+
             peer = DC_dict_get_object_with_key (&serv->conn_peers, (char*)strid);
             if (peer) {
+                if (serv->disconnect) {
+                    serv->disconnect (serv, peer, serv->private_data, &error);
+                }
                 DC_dict_remove_object_with_key (&serv->conn_peers, (char*)strid);
-                memset (peer, '\0', sizeof (jPeer));
-                serv->mem_peers.release_peer (&serv->mem_peers, peer);
+            }
+            break;
+        case JCOM_PING:
+            if (JUSE_REPLY (*hdr)) {
+                
             }
             break;
         case JCOM_TRANS:
-            sprintf (strid, "%lu", hdr->PID);
-            if (hdr->length > max_trans) {
-                return 0;
+            if (JUSE_REPLY (*hdr)) {
+
             }
-            peer = DC_dict_get_object_with_key (&serv->peers, (char*)strid);
+            peer = DC_dict_get_object_with_key (&serv->conn_peers, (char*)strid);
             if (peer) {
-                peer->netbuf = netbuf; 
+                if (serv->transaction) {
+                    status = serv->transaction (serv, peer, serv->private_data, &error);
+                }
             }
             break;
         default:
             break;
     }
 
-    if (serv->handler) {
-        serv->handler (hdr->command, peer, serv->data);
-    }
-    if (netbuf) {
-        serv->mem_netbuf.free_buffer (&serv->mem_netbuf, netbuf);
-    }
+    if (status) {
+#if 0
+        hdr->error.eclass = error.eclass;
+        hdr->error.ecode  = error.ecode;
+        hdr->length       = 0;
 
+        if (peer->net_info.proto == PROTO_TCP) {
+            if (send (peer->inet_info.sock_fd, hdr, SZJUSEHDR, 0) < SZJUSEHDR) {
+
+            }
+        } else if (peer->net_info.proto == PROTO_UDP) {
+            if (sendto (peer->inet_info.sock_fd, hdr, SZJUSEHDR, 0, skaddr, sizeof (skaddr)) < SZJUSEHDR) {
+
+            }
+        }
+#endif
+    }
     return 0;
 }
-int ServerRun (jServer *serv, void (*core)(void*, jPeer*), void *data, int tm_wait, unsigned int max_trans)
+
+
+int ServProc (jServer *serv, jPeer *peer)
 {
-    fd_t fds;
+    jPeer *newpeer;
+    int csock;
+
+        if (peer->inet_info.sock_fd == serv->inet_info.sock_fd) {
+            if (serv->inet_info.proto == PROTO_TCP) {
+                csock = accept (serv->inet_info.sock_fd, NULL, NULL);
+                if (csock > 0) {
+                    newpeer = serv->peer_manager.new_peer (&serv->peer_manager);
+                    if (newpeer) {
+                        memset (newpeer, '\0', sizeof (jPeer));
+                        newpeer->inet_info.sock_fd = csock;
+                        newpeer->inet_info.proto   = peer->inet_info.proto;
+                        newpeer->conn_time         = serv->ping_count;
+                        DC_list_add_object (&serv->sock_peers, (void*)newpeer);
+                        return csock;
+                    } else {
+                        close (csock);
+                    }
+                }
+            } else if (serv->inet_info.proto == PROTO_UDP) {
+                DoRequest (peer, serv);
+            }
+        } else {
+            DoRequest (peer, serv);
+        }
+    return 0;
+}
+
+int DoIORequest (jServer *serv,int num, void *data)
+{
+    void *saveptr = NULL;
+    jPeer *peer;
+    int max_fd = 0;
+    int newfd;
+
+    do {
+        if (pthread_rwlock_rdlock (&serv->rwlock) < 0) {
+            return -1;
+        }
+
+        peer = DC_list_next_object (&serv->sock_peers, &saveptr);
+
+        if (peer) {
+            if (FD_ISSET (peer->inet_info.sock_fd, (fd_set*)data)) {
+                max_fd = (max_fd > peer->inet_info.sock_fd?max_fd:peer->inet_info.sock_fd);
+                newfd = ServProc (serv, peer);
+                if (newfd > 0) {
+                    FD_SET (newfd, (fd_set*)data);
+                    max_fd = (max_fd > newfd?max_fd:newfd);
+                }
+            }
+        }
+        
+        pthread_rwlock_unlock (&serv->rwlock);
+    } while (peer && num > 0);
+
+    return max_fd;
+}
+
+void *JuseServer (void *data)
+{
+    jServer *serv = (jServer*)data;
+    int max_fd;
     int ret;
     struct timeval timew;
-    int max_fd,i;
+    fd_set fds;
     jPeer *peer;
-    int csock;
-    void *save_ptr;
-    unsigned int ping_count = 0;
 
     FD_ZERO (&fds);
     FD_SET (serv->inet_info.sock_fd, &fds);
     max_fd = serv->inet_info.sock_fd;
 
-    peer = serv->mem_peers.new_peer (&serv->mem_peers);
+    //为服务器建立节点。
+    peer = serv->peer_manager.new_peer (&serv->peer_manager);
+    memset (peer, '\0', sizeof (jPeer));
     peer->inet_info.sock_fd = serv->inet_info.sock_fd;
     peer->inet_info.proto   = serv->inet_info.proto;
     peer->inet_info.port    = serv->inet_info.port;
+    peer->pid               = 0;
     DC_list_add_object (&serv->sock_peers, (void*)peer);
 
-    do {
-        if (tm_wait) {
-            timew.tv_sec = tm_wait;
-            timew.tv_usec = 0;
-        }
+     do {
+        timew.tv_sec = serv->time_wait;
+        timew.tv_usec = 0;
 
-        ret = select (max_fd+1, &fds, NULL, NULL, tm_wait?:&timew:NULL);
+        ret = select (max_fd+1, &fds, NULL, NULL, serv->time_wait?&timew:NULL);
         if (ret < 0) {
             if (errno == EINTR) {
                 continue;
             }
-            return -1;
+            return (void*)-1;
         } else if (ret == 0) {
-            if (core) {
-                ret = core (data, NULL);
-                if (ret) return 0;
+            serv->ping_count++;
+            if (serv->timeout) {
+                serv->timeout (serv, serv->private_data);
             }
-            ping_count++;
         } else {
-            save_ptr = NULL;
-            while ((peer = (jPeer*)DC_list_next_object (&serv->sock_peers, &save_ptr)) && ret) {
-                if (FD_ISSET (peer->inet_info.sock_fd, &fds)) {
-                    if (peer->inet_info.sock_fd == serv->inet_info.sock_fd) {
-                        if (serv->inet_info.proto == PROTO_TCP) {
-                            csock = accept (serv->inet_info.sock_fd, NULL, NULL);
-                            if (csock > 0) {
-                                peer = serv->mem_peers.new_peer (&serv->mem_peers);
-                                if (peer) {
-                                    memset (peer, '\0', sizeof (jPeer));
-                                    peer->inet_info.sock_fd = csock;
-                                    peer->inet_info.proto   = serv->inet_info.proto;
-                                    peer->conn_time         = ping_count;
-                                    DC_list_add_object (&serv->sock_peers, (void*)peer);
-                                    max_fd = (max_fd>csock?max_fd:csock);
-                                    FD_SET (csock, &fds);
-                                } else {
-                                    close (csock);
-                                }                            
-                            }
-                        } else if (serv->inet_info.proto == PROTO_UDP) {
-                            DoRequest (peer, serv, max_trans);
-                        }
-                    } else {
-                        DoRequest (peer, serv, max_trans);
-                    }
-
-                    ret--;
-                }
-            }
+            max_fd = DoIORequest (serv, ret, (void*)&fds);
         }
-    } while (1);
+    } while (!serv->quit_flag);
+
+    return NULL;
 }
 
-extern void ServerClose (jServer *serv);
+void *PeerKeeper (void *data)
+{
+    int ret;
+    jServer *serv = (jServer*)data;
 
+    do {
+        ret = SignalWait (&serv->signal, SIG_CHECK_PEER, 1);
+        if (ret < 0) {
+            break;
+        } else if (ret == 0) {
+
+        } else {
+
+        }
+    } while (1);
+
+    return NULL;   
+}
+
+int RunPeerKeeper (jServer *serv)
+{
+    pthread_t pt;
+
+    if (pthread_create (&pt, NULL, PeerKeeper, (void*)serv) < 0) {
+        return -1;
+    }
+
+    pthread_detach (pt);
+    return 0;
+}
+
+int ServerRun (jServer *serv, int thread)
+{
+    if (SignalInit (&serv->signal) < 0) {
+        return -1;
+    }
+
+    if (!PeerManagerInit (&serv->peer_manager, serv->max_peers + 1)) {
+        return -1;
+    }
+
+    if (!NetbufManagerInit (&serv->nb_manager, 
+                            serv->max_trans + SZTRANSHDR + 10, 
+                            serv->max_peers + 1)) {
+        return -1;
+    }
+
+    if (RunPeerKeeper (serv) < 0) {
+        return -1;
+    }
+
+    if (thread) {
+        if (pthread_create (&serv->run_thread, NULL, JuseServer, (void*)serv) < 0) {
+            return -1;
+        }
+    } else {
+        serv->run_thread = pthread_self ();
+        JuseServer (serv);
+    }
+
+    return 0;
+}
+
+void ClosePeers (jServer *serv)
+{
+    void *dataptr = NULL;
+    jPeer *peer;
+    jError error = {EOK, EOK};
+
+    while ((peer = DC_list_next_object (&serv->sock_peers, &dataptr))) {
+        if (peer->conn_flag) {
+            if (serv->disconnect) {
+                serv->disconnect (serv, peer, serv->private_data, &error);
+            }
+        }
+
+        if (peer->inet_info.sock_fd > 0) {
+            close (peer->inet_info.sock_fd);
+        }
+    }
+}
+
+void ServerQuit (jServer *serv, int wait)
+{
+    pthread_rwlock_wrlock (&serv->rwlock);
+    serv->quit_flag = 1;
+    pthread_rwlock_unlock (&serv->rwlock);
+
+    if (wait) {
+        pthread_join (serv->run_thread, NULL);
+    }
+}
+void ServerClose (jServer *serv)
+{
+    pthread_rwlock_wrlock (&serv->rwlock);
+    ClosePeers (serv);
+    PeerManagerUninit (&serv->peer_manager);
+    NetbufManagerUninit (&serv->nb_manager);
+    DC_list_destroy (&serv->sock_peers);
+    DC_dict_destroy (&serv->conn_peers);
+    pthread_rwlock_destroy (&serv->rwlock);
+}

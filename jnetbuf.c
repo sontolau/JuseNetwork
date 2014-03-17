@@ -33,7 +33,7 @@ BOOL NetbufManagerInit (jNetbufManager *nm, unsigned int pkt_size, int num)
         return FALSE;
     }
 
-    byteptr = nm->data_buffer = calloc (num, pkt_size + sizeof (jPayload) + 1);
+    byteptr = nm->data_buffer = calloc (num, pkt_size);
     if (nm->data_buffer == NULL) {
 err_quit:
         if (nm->data_buffer) free (nm->data_buffer);
@@ -50,9 +50,7 @@ err_quit:
 
     for (i=0; i<num; i++) {
         memset (&nm->net_buffer[i], '\0', sizeof (jNetbuf));
-        nm->net_buffer[i].payload = byteptr;
-        nm->net_buffer[i].data = byteptr + sizeof (jPayload);
-        PayloadInit (nm->net_buf[i].payload);
+        nm->net_buffer[i].data = byteptr;
         DC_list_add (&nm->buffers, (void*)&nm->net_buffer[i]);
         byteptr += pkt_size;
     }

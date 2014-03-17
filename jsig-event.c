@@ -1,6 +1,5 @@
 #include "jsig-event.h"
 
-#define JSIG_QUIT "__juse_signal_quit"
 
 int SignalInit (jSignal *sig)
 {
@@ -39,19 +38,24 @@ int SignalSet (jSignal *sig, char *sigev, void (*sig_handler)(void*), void *data
 int SignalWait (jSignal *sig, const char *sigwait, int sec)
 {
     //jHandler *h;
-    struct timespec ts;
+    struct timespec ts = {sec, 0};
+    int ret;
     do {
-        pthread_mutex_lock (&sig->sig_mutex);
-        pthread_cond_timedwait (&sig->sig_cond, &sig->sig_mutex);
-        
-        h = DC_dict_get_object_with_key (&sig->sig_vector, (char*)sig->sig);
-        pthread_mutex_unlock (&sig->sig_mutex);
-        if (h && h->sig_handler) {
-            h->sig_handler (h->data);
-        } else if (!strcmp (sig->sig, JSIG_QUIT)) {
-            break;
+        if (!(pthread_mutex_lock (&sig->sig_mutex);
+              ||(ret = pthread_cond_timedwait (&sig->sig_cond, &sig->sig_mutex, &ts)))) {
+            if (ret == 0) {
+                ret = strcmp (sig->sig, sigwait);
+                pthread_mutex_unlock (&sig->sig_mutex);
+                if (ret == 0) return 0;
+            } else if (ret == ETIMEDOUT) {
+                return 0;
+            }
+        } else {
+            return -1;
         }
     } while (1);
+
+    return -1;
 }
 
 void SignalSend (jSignal *sig, char *sigev)
@@ -67,8 +71,6 @@ void SignalSend (jSignal *sig, char *sigev)
 
 void SignalUninit (jSignal *sig)
 {
-    SignalSend (sig, JSIG_QUIT);
     pthread_mutex_destroy (&sig->sig_mutex);
     pthread_cond_destroy (&sig->sig_cond);
-    DC_dict_destroy (&sig->sig_vector);
 }
